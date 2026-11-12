@@ -29,6 +29,25 @@ async function persistUser(id){await db.query("INSERT INTO aa_user_data(user_id,
 const accountRoutes=accountAuth.routes(db);app.use('/api/account',accountRoutes);
 app.use('/api/amazon',amazonLink.routes(db,accountAuth.currentUser));
 async function auth(req,res,next){try{const user=await accountAuth.currentUser(db,req);if(!user)return res.status(401).json({error:'Inicia sesión en Detroit'});req.detroitUser=user;req.userState=await getUserState(user.id);next()}catch(e){next(e)}}
+// Diagnóstico limitado de conectividad: una solicitud HEAD por ruta, sin credenciales.
+// La prueba NO consulta ofertas, no sortea verificaciones y nunca hace reservas.
+const flexApiProbe=require('./flex-api-probe');
+let cachedFlexProbe=null, flexProbeAt=0, pendingFlexProbe=null;
+app.get('/api/flex/diagnostics',auth,async(req,res,next)=>{
+  try {
+    res.set('Cache-Control','no-store');
+    const now=Date.now();
+    if(cachedFlexProbe && now-flexProbeAt<15*60*1000)
+      return res.json({...cachedFlexProbe,fromCache:true});
+    if(!pendingFlexProbe){
+      flexProbeAt=now;
+      pendingFlexProbe=flexApiProbe.probeAll().then(result=>{
+        cachedFlexProbe=result;return result;
+      }).finally(()=>{pendingFlexProbe=null});
+    }
+    res.json({...await pendingFlexProbe,fromCache:false});
+  } catch(e){next(e)}
+});
 app.get('/api/integration/status',auth,async(req,res,next)=>{
   try {const key=await db.query('SELECT 1 FROM aa_ingest_keys WHERE user_id=$1',[req.detroitUser.id]);
     const received=await db.query('SELECT count(*)::int AS n FROM aa_offer_inbox WHERE user_id=$1',[req.detroitUser.id]);
