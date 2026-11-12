@@ -48,6 +48,25 @@ app.get('/api/flex/diagnostics',auth,async(req,res,next)=>{
     res.json({...await pendingFlexProbe,fromCache:false});
   } catch(e){next(e)}
 });
+// Una única consulta POST SIN autenticación al endpoint histórico, tras pulsar
+// explícitamente el botón. Resultados compartidos durante una hora entre usuarios
+// para minimizar tráfico. No consulta /AcceptOffer ni utiliza tokens de Amazon.
+let cachedFlexPost=null,flexPostAt=0,pendingFlexPost=null;
+app.post('/api/flex/post-diagnostic',auth,async(req,res,next)=>{
+  try {
+    res.set('Cache-Control','no-store');
+    const now=Date.now();
+    if(cachedFlexPost && now-flexPostAt<60*60*1000)
+      return res.json({...cachedFlexPost,fromCache:true});
+    if(!pendingFlexPost){
+      flexPostAt=now;
+      pendingFlexPost=flexApiProbe.probeReadOnlyPost().then(result=>{
+        cachedFlexPost=result;return result;
+      }).finally(()=>{pendingFlexPost=null});
+    }
+    res.json({...await pendingFlexPost,fromCache:false});
+  }catch(e){next(e)}
+});
 app.get('/api/integration/status',auth,async(req,res,next)=>{
   try {const key=await db.query('SELECT 1 FROM aa_ingest_keys WHERE user_id=$1',[req.detroitUser.id]);
     const received=await db.query('SELECT count(*)::int AS n FROM aa_offer_inbox WHERE user_id=$1',[req.detroitUser.id]);

@@ -43,3 +43,48 @@ test('un HTTP 200 nunca marca ofertas verificadas',async()=>{
  assert.equal(r.reachableByHead,true);
  assert.equal(r.flexOffersAccessVerified,false);
 });
+
+const {buildReadQuery,classifyPostStatus,probeReadOnlyPost}=require('./flex-api-probe');
+
+test('POST de diagnóstico usa ruta fija y solo cuerpo de consulta, sin secretos',async()=>{
+ const requests=[];
+ const fake=async(url,options)=>{requests.push({url,options});return {status:403,headers:{get:()=>null},body:{cancel:async()=>{}}}};
+ const result=await probeReadOnlyPost({request:fake,now:Date.UTC(2026,10,12),timeoutMs:1500});
+ assert.equal(requests.length,1);
+ assert.equal(requests[0].url,'https://flex-capacity-na.amazon.com/GetOffersForProviderPost');
+ assert.equal(requests[0].options.method,'POST');
+ assert.equal(requests[0].options.credentials,'omit');
+ assert.equal(requests[0].options.redirect,'manual');
+ assert.deepEqual(Object.keys(requests[0].options.headers).sort(),['accept','content-type']);
+ assert.equal(requests[0].options.headers.authorization,undefined);
+ const payload=JSON.parse(requests[0].options.body);
+ assert.deepEqual(payload.serviceAreaIds,[]);
+ assert.deepEqual(payload.filters.serviceAreaFilter,[]);
+ assert.equal(result.classification,'AUTORIZACION_DENEGADA');
+ assert.equal(result.realOffersVerified,false);
+ assert.equal(result.acceptanceAttempted,false);
+});
+
+test('clasifica respuestas sin falsos positivos de ofertas auténticas',async()=>{
+ assert.equal(classifyPostStatus(420),'BLOQUEO_ESPECIFICO_FLEX');
+ assert.equal(classifyPostStatus(405),'METODO_POST_NO_ADMITIDO');
+ assert.equal(classifyPostStatus(429),'LIMITE_DE_SOLICITUDES');
+ const res=await probeReadOnlyPost({request:async()=>({status:200,headers:{get:()=>null}})});
+ assert.equal(res.httpStatus,200);
+ assert.equal(res.realOffersVerified,false);
+});
+
+test('fallo de red no provoca reintentos ni fuga de detalles',async()=>{
+ let attempts=0;
+ const res=await probeReadOnlyPost({request:async()=>{attempts++;throw Error('secret_token_sensitive')}});
+ assert.equal(attempts,1);
+ assert.equal(res.classification,'ERROR_DE_RED');
+ assert.equal(JSON.stringify(res).includes('secret_token_sensitive'),false);
+});
+
+test('el esquema histórico de consulta no incluye identidad ni aceptación',()=>{
+ const payload=buildReadQuery(Date.UTC(2026,10,12));
+ assert.equal(payload.apiVersion,'V2');
+ assert.equal(payload.filters.timeFilter.endTime-payload.filters.timeFilter.startTime,86400);
+ assert.equal(JSON.stringify(payload).includes('AcceptOffer'),false);
+});

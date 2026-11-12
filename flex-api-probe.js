@@ -1,10 +1,9 @@
 'use strict';
 /*
  * Detroit — network capability research only.
- * One HEAD request per historical/documented URL, without credentials, cookies,
- * device identity, tokens, payloads, retries, or automated offer searches.
- * An HTTP response proves ONLY that a route responded to HEAD; it cannot prove
- * authorized Amazon Flex access. No offering/booking endpoints are POSTed.
+ * HEAD diagnostics and a separately triggered, single read-only-query POST.
+ * No credentials, cookies, device identity, signatures, retries, or bookings.
+ * HTTP responses do NOT prove authorized offers access.
  */
 const TARGETS = Object.freeze([
   Object.freeze({
@@ -78,5 +77,64 @@ async function probeAll({request=globalThis.fetch,timeoutMs=6500}={}) {
   };
 }
 
-module.exports={TARGETS,probeOne,probeAll};
+// Protocol experiment, only on explicit user action. The historical POST endpoint
+// is a READ query, NOT /AcceptOffer. No account/region identifiers or tokens.
+const READ_QUERY_URL='https://flex-capacity-na.amazon.com/GetOffersForProviderPost';
+function classifyPostStatus(status){
+  if (status===200) return 'HTTP_OK_SIN_VALIDAR_OFERTAS';
+  if (status===400 || status===422) return 'SOLICITUD_RECHAZADA_O_ESQUEMA_INCOMPATIBLE';
+  if (status===401 || status===403) return 'AUTORIZACION_DENEGADA';
+  if (status===404) return 'RUTA_NO_ENCONTRADA_O_NO_EXPUESTA';
+  if (status===405) return 'METODO_POST_NO_ADMITIDO';
+  if (status===420) return 'BLOQUEO_ESPECIFICO_FLEX';
+  if (status===429) return 'LIMITE_DE_SOLICITUDES';
+  if (status>=500) return 'ERROR_SERVIDOR';
+  return 'RESPUESTA_NO_CONCLUYENTE';
+}
+function buildReadQuery(now=Date.now()){
+  const startTime=Math.floor(now/1000);
+  return {
+    apiVersion:'V2',
+    filters:{serviceAreaFilter:[],timeFilter:{startTime,endTime:startTime+86400}},
+    serviceAreaIds:[]
+  };
+}
+async function probeReadOnlyPost({request=globalThis.fetch,timeoutMs=7000,now=Date.now()}={}) {
+  const started=Date.now();
+  try {
+    const response=await request(READ_QUERY_URL,{
+      method:'POST',
+      headers:{'content-type':'application/json','accept':'application/json'},
+      body:JSON.stringify(buildReadQuery(now)),
+      redirect:'manual',credentials:'omit',cache:'no-store',
+      signal:AbortSignal.timeout(timeoutMs)
+    });
+    // Do not read a successful body: it could contain private driver/offers data.
+    // The endpoint is unauthenticated; an HTTP 200 alone is NOT verified access.
+    try {await response.body?.cancel?.()}catch {}
+    const status=response.status;
+    const headers=response.headers;
+    return {
+      testedAt:new Date().toISOString(),endpoint:'GetOffersForProviderPost',
+      method:'POST',httpStatus:status,classification:classifyPostStatus(status),
+      elapsedMs:Date.now()-started,
+      contentType:headers?.get?.('content-type')||null,
+      credentialsUsed:false,deviceSignatureUsed:false,
+      realOffersVerified:false,acceptanceAttempted:false,
+      message:status===200
+        ? 'El endpoint devolvió HTTP 200 sin credenciales. NO se validó el contenido ni el origen de ofertas.'
+        : 'Respuesta a POST de consulta sin credenciales. No demuestra acceso a ofertas.'
+    };
+  }catch(error){
+    return {
+      testedAt:new Date().toISOString(),endpoint:'GetOffersForProviderPost',
+      method:'POST',httpStatus:null,
+      classification:(error?.name==='TimeoutError'||error?.name==='AbortError')?'TIMEOUT':'ERROR_DE_RED',
+      elapsedMs:Date.now()-started,credentialsUsed:false,deviceSignatureUsed:false,
+      realOffersVerified:false,acceptanceAttempted:false,
+      message:'No se pudo completar la prueba desde Render. No confirma el estado del endpoint.'
+    };
+  }
+}
+module.exports={TARGETS,probeOne,probeAll,buildReadQuery,classifyPostStatus,probeReadOnlyPost};
 if(require.main===module)probeAll().then(r=>console.log(JSON.stringify(r,null,2))).catch(e=>{console.error('Error de diagnóstico:',e.message);process.exitCode=1});
