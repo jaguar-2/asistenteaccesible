@@ -26,3 +26,14 @@ Sin `DATABASE_URL` la configuración, el estado y las suscripciones se pierden a
 - Tras cada reserva simulada confirmada el motor se detiene, sin reanudación automática.
 - Los horarios son preferencias; no se ejecuta inicio automático.
 - `ADMIN_TOKEN` protege la API pero esta versión es de **un solo usuario** y no sustituye una autenticación de producción.
+
+
+## Versión 7 — cuentas Detroit y preparación de integración
+
+- Añade `account-auth.js` a la raíz y actualiza `server.js` y `public/index.html`.
+- Configura `DATABASE_URL` en Render con una base PostgreSQL propia para habilitar usuarios y persistir suscripciones push. No es necesario cambiar `ADMIN_TOKEN` ni las claves VAPID existentes.
+- Abre Ajustes > Cuenta Detroit. La primera cuenta se crea una sola vez utilizando la clave inicial `ADMIN_TOKEN`; después inicia sesión con correo y contraseña **distintos de Amazon**.
+- Las contraseñas Detroit se derivan con scrypt y sal aleatoria; las sesiones usan cookies HttpOnly/Secure/SameSite=Strict y vencen en 7 días.
+- El sistema conserva temporalmente el acceso anterior mediante ADMIN_TOKEN para no bloquear el servicio actual. Después de verificar la migración, se recomienda retirarlo en una actualización posterior.
+- La integración Amazon Flex NO está implementada: no hay una API autorizada confirmada. El indicador de conexión informa de esta limitación. No se piden ni almacenan credenciales Amazon. Las reservas siguen siendo ficticias.
+- Los usuarios comparten el mismo motor de simulación (una instancia). Esta versión NO proporciona aislamiento multiusuario.
