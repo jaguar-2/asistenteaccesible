@@ -8,6 +8,7 @@ webpush.setVapidDetails('mailto:'+(process.env.VAPID_EMAIL||'admin@example.com')
 const db=process.env.DATABASE_URL?new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.DATABASE_URL.includes('localhost')?false:{rejectUnauthorized:false}}):null;
 const accountAuth=require('./account-auth');
 const offerEngine=require('./offer-engine');
+const flexBatch=require('./flex-batch-adapter');
 const amazonLink=require('./amazon-link');
 const defaultSettings=()=>({min:110,max:500,stations:[],days:[1,2,3,4,5],from:'06:00',to:'22:00',testOffers:true,autoAccept:true,notifications:true,interval:5,device:'android',schedule:false});
 const defaultState=()=>({running:false,phase:'DETENIDO',cycles:0,found:0,bookings:0,lastOffer:null,settings:defaultSettings(),logs:[]});
@@ -110,6 +111,61 @@ app.post('/api/ingest/offer',async(req,res,next)=>{
     await persistUser(id);
     if(evaluation.match)await push(id,'Oferta externa NO verificada',`$${offer.price} · ${offer.station}. Sin reserva automática.`);
     res.status(202).json({received:true,duplicate:false,match:evaluation.match,reasons:evaluation.reasons,booked:false,verifiedAmazonSource:false});
+  }catch(e){next(e)}
+});
+// Two deliberately explicit read-only inbound contracts.
+// IMPORTANT: group-v1 is Detroit's bridge schema, NOT Amazon's native GetOfferGroups response.
+// The sender must be separately authorized; this endpoint never obtains Amazon credentials.
+app.get('/api/ingest/formats',auth,(req,res)=>res.json({
+  formats:[
+    {id:'legacy-offer-list',label:'Lista histórica offerList',sourceVerified:false},
+    {id:'detroit-group-v1',label:'Grupos normalizados por un emisor autorizado (formato Detroit)',sourceVerified:false}
+  ],
+  maxOffersPerBatch:flexBatch.MAX_OFFERS,
+  maxGroupsPerBatch:flexBatch.MAX_GROUPS,
+  amazonFlexConnected:false,offersSourceVerified:false,acceptanceAvailable:false,
+  note:'GetOfferGroups aparece en el APK, pero su respuesta real no ha sido capturada ni validada. Detroit no la interpreta automáticamente.'
+}));
+app.post('/api/ingest/batch',async(req,res,next)=>{
+  try{
+    const token=(req.get('authorization')||'').replace(/^Bearer /i,'');
+    if(!offerEngine.validateIngestKey(token))return res.status(401).json({error:'Clave Detroit inválida'});
+    const owner=await db.query('SELECT user_id FROM aa_ingest_keys WHERE token_hash=$1',[offerEngine.keyHash(token)]);
+    if(!owner.rowCount)return res.status(401).json({error:'Clave Detroit no autorizada'});
+    let batch;
+    try{batch=flexBatch.decodeBatch(req.body)}
+    catch(e){if(e.code==='INVALID_PAYLOAD'||e instanceof TypeError||e instanceof RangeError)
+      return res.status(400).json({error:e.message,code:'INVALID_BATCH'});throw e}
+    const id=owner.rows[0].user_id,st=await getUserState(id),accepted=[];
+    // Each incoming offer is filtered BEFORE storing; an untrusted payload cannot claim origin.
+    for(const offer of batch.offers){
+      accepted.push({offer,evaluation:offerEngine.evaluateOffer(offer,st.settings)});
+    }
+    let inserted=0,matched=0,duplicates=0;
+    const client=await db.connect();
+    try{
+      await client.query('BEGIN');
+      for(const {offer,evaluation} of accepted){
+        const q=await client.query(`INSERT INTO aa_offer_inbox(user_id,source,offer_id,offer,matched,reasons)
+          VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING RETURNING offer_id`,
+          [id,batch.source,offer.id,JSON.stringify(offer),evaluation.match,JSON.stringify(evaluation.reasons)]);
+        if(q.rowCount){inserted++;if(evaluation.match)matched++}
+        else duplicates++;
+      }
+      await client.query('COMMIT');
+    }catch(e){try{await client.query('ROLLBACK')}catch{}throw e}
+    finally{client.release()}
+    logUser(st,`Lote externo NO VERIFICADO · ${batch.format}: ${inserted} nuevo(s), ${matched} coinciden, ${batch.skipped.length} omitido(s)`);
+    await persistUser(id);
+    // At most one alert per batch: prevent one provider submission from spamming the user.
+    if(matched){
+      try{await push(id,'Coincidencias externas NO verificadas',`${matched} oferta(s) del lote cumplen filtros. No hay reserva automática.`)}
+      catch(e){console.error('Batch push failed:',e.message)}
+    }
+    res.status(202).json({received:true,format:batch.format,source:batch.source,
+      records:batch.totalRecords,groups:batch.groupCount||0,inserted,duplicates,matched,
+      skipped:batch.skipped.slice(0,20),skippedCount:batch.skipped.length,
+      verifiedAmazonSource:false,acceptanceAvailable:false,booked:false});
   }catch(e){next(e)}
 });
 app.post('/api/ingest/accept/:id',auth,(req,res)=>res.status(409).json({
