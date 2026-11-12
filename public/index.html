@@ -7,11 +7,13 @@
 <section id="filtros" class="section"><div class="panel"><h2>⚙ Filtros · Detroit, Michigan</h2><div class="grid"><div class="field"><label>Precio mínimo (USD)<input id="min" type="number" min="0" value="110"></label></div><div class="field"><label>Precio máximo (USD)<input id="max" type="number" min="0" value="500"></label></div></div><h2>🏭 Estaciones preferidas</h2><input id="stationSearch" placeholder="Buscar código o ciudad"><div class="buttons" style="margin-top:10px"><button id="all" class="btn blue">Seleccionar todas</button><button id="none" class="btn red">Limpiar</button></div><div id="stations"></div><p class="muted">Códigos de referencia, no confirmación de disponibilidad de Amazon Flex.</p><button class="btn green" id="saveFilters">Guardar filtros</button></div></section>
 <section id="horarios" class="section"><div class="panel"><h2>▦ Horarios</h2><p class="note">Los horarios se guardan como preferencias. Por seguridad, no arrancan el motor automáticamente: solo una orden manual lo inicia.</p><div class="grid"><label>Desde<input id="from" type="time" value="06:00"></label><label>Hasta<input id="to" type="time" value="22:00"></label></div><h3>Días preferidos</h3><div id="days" class="grid"></div><button id="saveHours" class="btn green">Guardar horarios</button></div></section>
 <section id="registros" class="section"><div class="panel"><h2>☷ Historial del servidor</h2><div id="logs" class="muted">Sin registros.</div></div></section>
-<section id="ajustes" class="section"><div class="panel"><h2>👤 Mi cuenta Detroit</h2><p id="currentEmail" class="muted">Sesión iniciada</p><button id="logoutAccount" class="btn red">Cerrar sesión</button><h2>🔗 Mi cuenta Amazon Flex</h2><p id="integrationStatus" class="note">No vinculada. Sin conector autorizado de Amazon Flex.</p>
-<h3>Verificación de identidad con Amazon</h3>
-<p id="amazonLinkStatus" class="note">Cargando estado de autorización...</p>
-<div class="buttons"><button id="startAmazonLink" class="btn blue" type="button">Iniciar sesión con Amazon</button><button id="disconnectAmazonLink" class="btn red" type="button">Desvincular identidad</button></div>
-<p class="muted">El inicio de sesión se hace en Amazon. Detroit solo conserva un identificador vinculado, sin guardar tu contraseña ni tokens. Esta verificación NO permite consultar ni reservar bloques Flex.</p>
+<section id="ajustes" class="section"><div class="panel"><h2>👤 Mi cuenta Detroit</h2><p id="currentEmail" class="muted">Sesión iniciada</p><button id="logoutAccount" class="btn red">Cerrar sesión</button><h2>🔗 Cuentas Amazon vinculadas</h2><p id="integrationStatus" class="note">Sin conector de ofertas Amazon Flex autorizado.</p>
+<h3>Vincular identidad Amazon (correo y contraseña en Amazon)</h3>
+<p id="amazonLinkStatus" class="note" aria-live="polite">Cargando estado de autorización...</p>
+<div id="amazonAccounts" class="account-collection" aria-live="polite"></div>
+<div class="buttons"><button id="startAmazonLink" class="btn blue" type="button">Vincular otra cuenta Amazon</button><button id="disconnectAmazonLink" class="btn red" type="button">Desvincular cuenta seleccionada</button></div>
+<p class="muted">Al pulsar Vincular, se abre la página oficial de Amazon para introducir tu correo, contraseña y código de verificación. <strong>Detroit nunca recibe ni almacena tu contraseña Amazon.</strong> Puedes mantener hasta cinco identidades vinculadas a este usuario Detroit. Si Amazon vuelve a mostrar la cuenta anterior, utiliza «Cambiar cuenta» en la pantalla oficial de Amazon.</p>
+<p class="note">Importante: el vínculo confirma una identidad Amazon, no verifica que esa identidad tenga una cuenta de repartidor Amazon Flex activa, ni autoriza consultar o aceptar bloques.</p>
 <h3>Prueba de conectividad de API (solo lectura)</h3>
 <p class="muted">Compara cuatro rutas conocidas con una solicitud HEAD por ruta desde Detroit. No utiliza tu cuenta Amazon, no consulta bloques y no hace reservas. Un HTTP 200 tampoco demuestra acceso a ofertas.</p>
 <button id="runFlexProbe" class="btn blue" type="button">Comprobar rutas de API</button>
@@ -79,11 +81,46 @@ $('createIngestKey').onclick=async()=>{try{const r=await api('ingest/key','POST'
 $('revokeIngestKey').onclick=async()=>{try{await api('ingest/key','DELETE');$('ingestKey').value='';$('ingestKeyMessage').textContent='Clave revocada. Ya no se aceptarán eventos con esa clave.';await integrationStatus()}catch(e){msg(e.message)}};
 async function imported(){try{const r=await api('ingest/events');$('ingestSummary').textContent='Eventos externos recibidos: '+r.events.length+'. Ninguno verificado por Amazon; aceptación no disponible.';$('importedEvents').replaceChildren();for(const e of r.events){const d=document.createElement('div');d.className='log';d.textContent=`${new Date(e.received_at).toLocaleString('es')} — EXTERNO NO VERIFICADO — $${e.offer.price} · ${e.offer.station} · ${e.matched?'COINCIDE':'DESCARTADO: '+e.reasons.join(', ')}`;$('importedEvents').append(d)}}catch(e){$('ingestSummary').textContent=e.message}}
 $('refreshImported').onclick=imported;
-async function amazonLinkStatus(){try{const r=await api('amazon/status');$('amazonLinkStatus').textContent=(r.identityLinked?'✓ Identidad Amazon verificada. ':'Sin identidad Amazon vinculada. ')+(r.configured?'Autorización disponible. ':'Falta configurar Login with Amazon en Render. ')+'No habilita ofertas ni reservas de Flex.';$('startAmazonLink').disabled=!r.configured;$('disconnectAmazonLink').disabled=!r.identityLinked}catch(e){$('amazonLinkStatus').textContent='No se pudo consultar: '+e.message}}
+async function amazonLinkStatus(){
+  const list=$('amazonAccounts');
+  try{
+    const r=await api('amazon/status');
+    const accounts=r.accounts||[];
+    const active=accounts.find(a=>a.active);
+    $('amazonLinkStatus').textContent=accounts.length
+      ?'✓ '+accounts.length+' identidad(es) Amazon vinculada(s). Seleccionada: '+(active?.email||'correo pendiente de verificar')+'.'
+      :'Todavía no hay identidades Amazon vinculadas.';
+    $('startAmazonLink').disabled=!r.configured||accounts.length>=r.maxAccounts;
+    $('disconnectAmazonLink').disabled=!active;
+    list.replaceChildren();
+    for(const account of accounts){
+      const item=document.createElement('div');item.className='log';item.style.marginBottom='12px';
+      const title=document.createElement('strong');
+      title.textContent=(account.active?'● SELECCIONADA · ':'')+(account.email||'Correo pendiente: vuelve a autorizar')+(account.name?' · '+account.name:'');
+      item.append(title);
+      const sub=document.createElement('p');sub.className='muted';sub.style.margin='4px 0 10px';
+      sub.textContent='Identidad Amazon vinculada · '+new Date(account.linkedAt).toLocaleDateString('es')+' · Ofertas Flex: no autorizadas';
+      item.append(sub);
+      const buttons=document.createElement('div');buttons.className='buttons';
+      if(!account.active){
+        const select=document.createElement('button');select.className='btn blue';select.type='button';select.textContent='Seleccionar esta cuenta';
+        select.onclick=async()=>{select.disabled=true;try{await api('amazon/accounts/'+encodeURIComponent(account.id)+'/activate','POST',{});await amazonLinkStatus();msg('Cuenta seleccionada')}catch(e){msg(e.message);select.disabled=false}};
+        buttons.append(select);
+      }
+      const remove=document.createElement('button');remove.className='btn red';remove.type='button';remove.textContent='Desvincular';
+      remove.onclick=async()=>{if(!confirm('¿Desvincular '+(account.email||'esta identidad Amazon')+' de Detroit?'))return;remove.disabled=true;try{await api('amazon/accounts/'+encodeURIComponent(account.id)+'/remove','POST',{});await amazonLinkStatus();msg('Cuenta desvinculada')}catch(e){msg(e.message);remove.disabled=false}};
+      buttons.append(remove);item.append(buttons);list.append(item);
+    }
+  }catch(e){$('amazonLinkStatus').textContent='No se pudo consultar: '+e.message;list.replaceChildren()}
+}
 $('startAmazonLink').onclick=()=>{window.location.assign('/api/amazon/start')};
-$('disconnectAmazonLink').onclick=async()=>{if(!confirm('¿Desvincular la identidad Amazon de esta cuenta Detroit?'))return;try{await api('amazon/disconnect','POST',{});await amazonLinkStatus();msg('Identidad Amazon desvinculada')}catch(e){msg(e.message)}};
+$('disconnectAmazonLink').onclick=async()=>{
+  if(!confirm('¿Desvincular solo la cuenta Amazon seleccionada?'))return;
+  try{await api('amazon/disconnect','POST',{});await amazonLinkStatus();msg('Cuenta seleccionada desvinculada')}
+  catch(e){msg(e.message)}
+};
 const amazonResult=new URLSearchParams(location.search).get('amazon');
-if(amazonResult){const feedback={linked:'Identidad Amazon verificada y vinculada a Detroit. No hay acceso a ofertas Flex.',denied:'Se canceló la autorización de Amazon.',failed:'No se completó la validación de Amazon.', 'already-linked':'Esta identidad Amazon ya está vinculada a otra cuenta Detroit.'};document.getElementById('message').textContent=feedback[amazonResult]||'';history.replaceState(null,'','/');}
+if(amazonResult){const feedback={linked:'Identidad Amazon verificada y vinculada a Detroit. No hay acceso a ofertas Flex.',denied:'Se canceló la autorización de Amazon.',failed:'No se completó la validación de Amazon.', 'already-linked':'Esta identidad Amazon ya está vinculada a otro usuario Detroit.',limit:'El máximo es de cinco identidades vinculadas por usuario Detroit.'};document.getElementById('message').textContent=feedback[amazonResult]||'';history.replaceState(null,'','/');}
 
 accountStatus();setInterval(refresh,3000);
 </script></body></html>
