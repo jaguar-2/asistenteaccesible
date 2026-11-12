@@ -1,1 +1,1 @@
-{"name":"asistenteaccesible-detroit","version":"6.0.0","private":true,"scripts":{"start":"node server.js"},"engines":{"node":">=20"},"dependencies":{"express":"^4.21.2","web-push":"^3.6.7","pg":"^8.13.1"}}
+{"name":"asistenteaccesible-detroit","version":"8.0.0","private":true,"scripts":{"start":"node server.js"},"engines":{"node":">=20"},"dependencies":{"express":"^4.21.2","web-push":"^3.6.7","pg":"^8.13.1"}}
