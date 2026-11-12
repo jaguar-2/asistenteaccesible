@@ -16,6 +16,10 @@
 <p class="muted">Compara cuatro rutas conocidas con una solicitud HEAD por ruta desde Detroit. No utiliza tu cuenta Amazon, no consulta bloques y no hace reservas. Un HTTP 200 tampoco demuestra acceso a ofertas.</p>
 <button id="runFlexProbe" class="btn blue" type="button">Comprobar rutas de API</button>
 <p id="flexProbeStatus" class="note" style="white-space:pre-line">Pruebas aún no ejecutadas en Render.</p>
+<h3>Prueba POST del protocolo histórico (un intento)</h3>
+<p class="muted">Prueba controlada desde Render: una consulta POST sin cuenta Amazon ni firma, al endpoint histórico de lectura. No acepta bloques ni extrae ofertas; permite distinguir códigos HTTP por método. El resultado se conserva durante una hora para evitar repetir solicitudes.</p>
+<button id="runFlexPostProbe" class="btn blue" type="button">Ejecutar prueba POST de lectura</button>
+<p id="flexPostProbeStatus" class="note" style="white-space:pre-line">Todavía no ejecutada.</p>
 <h2>📥 Canal de ofertas externas</h2>
 <p class="note">Este canal recibe eventos de un proveedor que tú controles o tengas autorizado. <strong>No inicia sesión en Amazon, no verifica que el evento venga de Amazon y NO puede aceptar bloques.</strong> Nunca introduzcas aquí tu contraseña de Amazon.</p>
 <div class="buttons"><button id="createIngestKey" class="btn blue">Crear / renovar clave Detroit</button><button id="revokeIngestKey" class="btn red">Revocar clave</button></div>
@@ -40,6 +44,20 @@ $('runFlexProbe').onclick=async()=>{
     });
     out.textContent=rows.join('\n')+'\n\nResultado: solo conectividad, no ofertas reales.'+(info.fromCache?' (Resultado guardado, máximo 15 min.)':'');
   } catch(e){out.textContent='Error del diagnóstico: '+e.message;}
+};
+$('runFlexPostProbe').onclick=async()=>{
+  const out=$('flexPostProbeStatus'),b=$('runFlexPostProbe');
+  out.textContent='Ejecutando una sola solicitud POST desde Render...';
+  b.disabled=true;
+  try {
+    const r=await api('flex/post-diagnostic','POST',{});
+    out.textContent='Método: '+r.method+' · Ruta: '+r.endpoint+'\n'+
+      'HTTP: '+(r.httpStatus===null?'Sin respuesta':r.httpStatus)+'\n'+
+      'Diagnóstico: '+r.classification+'\n'+
+      'Duración: '+r.elapsedMs+' ms'+(r.fromCache?' · Resultado conservado (1 hora)':'')+'\n'+
+      r.message+'\nNo se utilizó ninguna cuenta Amazon ni se obtuvo una oferta verificada.';
+  }catch(e){out.textContent='No se pudo iniciar la prueba: '+e.message;}
+  finally{b.disabled=false;}
 };
 function fill(s){settings=s;for(const k of ['min','max','from','to','interval','device'])$(k).value=s[k];for(const k of ['testOffers','autoAccept','notifications'])$(k).checked=s[k];selected=new Set(s.stations||[]);document.querySelectorAll('[data-day]').forEach(cb=>cb.checked=s.days.includes(+cb.dataset.day));renderStations()}
 function render(s){$('state').textContent=s.phase;$('state').classList.toggle('on',s.running);$('detail').textContent=s.running?'Simulación en servidor activa. No necesita pantalla encendida.':'Detenido. Solo inicio o continuación manual.';for(const k of ['cycles','found','bookings'])$(k).textContent=s[k];$('lastOffer').textContent=s.lastOffer?`Última oferta ficticia: $${s.lastOffer.price} · ${s.lastOffer.station} · ${s.lastOffer.city}`:'Sin ofertas de prueba';$('logs').replaceChildren();(s.logs||[]).forEach(x=>{const d=document.createElement('div');d.className='log';d.textContent=new Date(x.at).toLocaleString('es')+' — '+x.msg;$('logs').append(d)})}
